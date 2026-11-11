@@ -87,6 +87,28 @@ const CL={
     return await crypto.subtle.verify({name:'ECDSA',hash:'SHA-256'},k,CL.ub64u(sig),new TextEncoder().encode(CL.canon(o)))}catch(e){return false}},
   unsigned(o){const b={...o};delete b.sig;return b},
   byeOk(o){return !!(o&&o.k==='bye'&&o.cid&&o.co&&o.co.tid&&o.co.pub&&o.bye&&o.bye.key&&typeof o.bye.pt==='number'&&o.sig)},
+  /* ===== short class link (#k=): the same signed card, version 2, packed as bytes =====
+     card v2 (what is signed): {k:'cls2',cid,c,v,t,co:{tid,n,pub,ph?,em?},seats:[[g]|[g,tid,name,kh]],ds?,nk?,to?,from?}
+     kh = first 8 bytes of SHA-256 of the teacher's 33-byte public key (base64url) or '' when not known yet.
+     Game codes travel as an index into GIDX: a fixed list that only grows. Numbers use arithmetic varints (t is ~1.7e12). */
+  GIDX:['m7','f7','p7','e7','s7','t7'],
+  async kh(pub){try{const h=await crypto.subtle.digest('SHA-256',CL.ub64u(pub));return CL.b64u(new Uint8Array(h).slice(0,8))}catch(e){return ''}},
+  enc2(o){const B=[],te=new TextEncoder(),vi=n=>{n=Math.floor(Number(n)||0);while(n>=128){B.push(n%128+128);n=Math.floor(n/128)}B.push(n)},
+      st=x=>{const b=te.encode(String(x==null?'':x));vi(b.length);B.push(...b)},raw=(t,len)=>{const b=CL.ub64u(t);if(len&&b.length!==len)throw new Error('len');vi(len?0:b.length);if(len)B.pop();B.push(...b)};
+    const f=(o.ds?1:0)|(o.nk?2:0)|(o.to?4:0)|(o.from?8:0)|(o.co.ph?16:0)|(o.co.em?32:0);
+    B.push(2,f);st(o.cid);st(o.c);st(o.co.tid);st(o.co.n);vi(o.v);vi(o.t);raw(o.co.pub,33);vi(o.seats.length);
+    o.seats.forEach(z=>{const gi=CL.GIDX.indexOf(z[0]);if(gi<0)throw new Error('game');if(z.length===1){B.push(128|gi);return}B.push(gi);st(z[1]);st(z[2]);if(z[3]){const b=CL.ub64u(z[3]);vi(b.length);B.push(...b)}else vi(0)});
+    if(o.ds)st(o.ds);if(o.to){st(o.to.key);vi(o.to.pt)}if(o.from)st(o.from.cid);if(o.co.ph)st(o.co.ph);if(o.co.em)st(o.co.em);raw(o.sig,64);
+    return CL.b64u(new Uint8Array(B))},
+  dec2(code){try{const b=CL.ub64u(code),td=new TextDecoder('utf-8',{fatal:true});let i=0;const need=n=>{if(i+n>b.length)throw new Error('short')};
+      const vi=()=>{let n=0,m=1,c;do{need(1);c=b[i++];n+=(c%128)*m;m*=128;if(m>2**56)throw new Error('vi')}while(c>=128);return n};
+      const st=()=>{const n=vi();if(n>400)throw new Error('long');need(n);const s=td.decode(b.slice(i,i+n));i+=n;return s},raw=n=>{need(n);const r=CL.b64u(b.slice(i,i+n));i+=n;return r};
+      need(2);if(b[i++]!==2)return null;const f=b[i++];
+      const o={k:'cls2',cid:st(),c:st()},co={tid:st(),n:st()};o.v=vi();o.t=vi();co.pub=raw(33);o.co=co;const ns=vi();if(ns>20)throw new Error('seats');o.seats=[];
+      for(let k=0;k<ns;k++){need(1);const x=b[i++],g=CL.GIDX[x&127];if(!g)throw new Error('game');if(x&128){o.seats.push([g]);continue}const tid=st(),name=st(),hl=vi();if(hl&&hl!==8)throw new Error('kh');o.seats.push([g,tid,name,hl?raw(8):''])}
+      if(f&1)o.ds=st();if(f&2)o.nk=1;if(f&4)o.to={key:st(),pt:vi()};if(f&8)o.from={cid:st()};if(f&16)co.ph=st();if(f&32)co.em=st();
+      o.sig=raw(64);if(i!==b.length)throw new Error('trailing');return o}catch(e){return null}},
+  cls2Ok(o){return !!(o&&o.k==='cls2'&&o.cid&&CL.normClass(o.c)&&o.co&&o.co.tid&&o.co.n&&o.co.pub&&Array.isArray(o.seats)&&o.seats.every(z=>Array.isArray(z)&&CL.GIDX.includes(z[0])&&(z.length===1||z.length===4))&&typeof o.v==='number'&&typeof o.t==='number'&&o.sig)},
   clsOk(o){return !!(o&&o.k==='cls'&&o.cid&&CL.normClass(o.c)&&o.co&&o.co.tid&&o.co.n&&o.co.pub&&Array.isArray(o.seats)&&typeof o.v==='number'&&typeof o.t==='number'&&o.sig)},
 
   /* ===== the Turkish parent message (used by the games and by the teacher panel) ===== */
@@ -220,6 +242,9 @@ if(typeof window!=='undefined'&&window.G7_GAME&&typeof LESSONS!=='undefined'){(f
     if((m=h.match(/^#sinif=([A-Za-z0-9_-]+)/))){const o=CL.unpack(m[1]);history.replaceState(null,'',location.pathname+location.search);
       if(o&&o.k==='bye'){if(!CL.byeOk(o)){hub();flash(Cx.bad);return true}takeBye(o);return true}
       if(!CL.clsOk(o)){hub();flash(Cx.bad);return true}HOLD=true;o._raw=o.seats;o.seats=o.seats.map(z=>z.length===1?[z[0],o.co.tid,o.co.n,o.co.pub,o.co.alias||[],o.co.ph||'',o.co.em||'']:z);takeClass(o);return true}
+    if((m=h.match(/^#k=([A-Za-z0-9_-]+)/))){const o=CL.dec2(m[1]);history.replaceState(null,'',location.pathname+location.search);
+      if(!CL.cls2Ok(o)){hub();flash(Cx.bad);return true}HOLD=true;const ex=CLS()[o.cid],kn=t=>(ex&&ex.seats.find(z=>z[1]===t))||[];
+      o._raw=o.seats;o.seats=o.seats.map(z=>z.length===1?[z[0],o.co.tid,o.co.n,o.co.pub,(ex&&ex.co.alias)||[],o.co.ph||'',o.co.em||'']:[z[0],z[1],z[2],kn(z[1])[3]||'',kn(z[1])[4]||[],'','',z[3]]);takeClass(o);return true}
     if((m=h.match(/^#duyuru=([A-Za-z0-9_-]+)/))){const o=CL.unpack(m[1]);history.replaceState(null,'',location.pathname+location.search);
       if(!o||o.k!=='duyuru'||!o.cid||!o.by||!o.by.tid||!o.m||!o.sig||!o.t){hub();flash(Cx.annBad);return true}takeAnn(o);return true}
     return false}
@@ -229,13 +254,13 @@ if(typeof window!=='undefined'&&window.G7_GAME&&typeof LESSONS!=='undefined'){(f
      Seated teachers are copied into g7-teachers with src:'seat'; teachers from older personal invitations stay (inv). ---- */
   const Cx=EN?{bad:'This class link could not be read or was changed.',nosig:'This browser cannot check signed class links. Open the game from its web address in Chrome, Edge or Safari.',
       inv:o=>`🎉 <b>${CL.h(o.co.n)}</b> invites you to class <b>${CL.h(o.c)}</b>.`,joined:o=>`You joined class ${CL.h(o.c)}.`,list:'Your teachers:',updated:'Your class teachers were updated.',
-      wrongKey:'This update is not from your class coordinator, so it was refused.',old:'This class link is older than the one you have. Nothing changed.',
+      wrongKey:'This update is not from your class coordinator, so it was refused.',old:'This class link is older than the one you have. Nothing changed.',same:'You already have this class link; nothing to update.',
       nkT:'New coordinator key',nk:o=>`${CL.h(o.co.n)} says the class key has changed. Accept this only if your teacher showed you this QR code in class.`,nkYes:'Yes, I got it in class',nkNo:'No, refuse',
       chT:c=>`Teacher change in ${CL.h(c)}`,coord:'Class teacher',chHint:'Accept only if your teacher told you about this change.',chYes:'Accept',chNo:'Refuse',
       former:'This message is from a former teacher of your class.',notYou:'This link is for another student.',removed:c=>`You were removed from class ${CL.h(c)}. To join again, ask your teacher.`,byeNone:'You are not in this class.',byeOther:'This notice is for another student.',byeBad:'This notice could not be checked, so it was refused.',byeT:c=>`You left class ${CL.h(c)}`,byeMsg:'Your coordinator removed you from this class. Your progress in the games is kept.',byeFor:n=>`This notice is for ${CL.h(n)}: removed from the class on this device.`,moving:'moving',myClasses:'My classes',ann:'Announcement',annGot:'📣 New class announcement',annBad:'This announcement could not be checked, so it was refused.',annNo:'This announcement is for a class you have not joined.'}
     :{bad:'Bu sınıf bağlantısı okunamadı ya da değiştirilmiş.',nosig:'Bu tarayıcı imzalı sınıf bağlantılarını denetleyemiyor. Oyunu internet adresinden Chrome, Edge ya da Safari ile açın.',
       inv:o=>`🎉 <b>${CL.h(o.co.n)}</b> seni <b>${CL.h(o.c)}</b> sınıfına davet ediyor.`,joined:o=>`${CL.h(o.c)} sınıfına katıldın.`,list:'Öğretmenlerin:',updated:'Sınıf öğretmenlerin güncellendi.',
-      wrongKey:'Bu güncelleme sınıfının koordinatöründen gelmiyor; kabul edilmedi.',old:'Bu sınıf bağlantısı elindekinden eski. Bir şey değişmedi.',
+      wrongKey:'Bu güncelleme sınıfının koordinatöründen gelmiyor; kabul edilmedi.',old:'Bu sınıf bağlantısı elindekinden eski. Bir şey değişmedi.',same:'Bu sınıf bağlantısı zaten güncel; değişen bir şey yok.',
       nkT:'Yeni koordinatör anahtarı',nk:o=>`${CL.h(o.co.n)} sınıf anahtarının değiştiğini söylüyor. Bunu yalnızca öğretmenin bu QR kodunu sınıfta gösterdiyse kabul et.`,nkYes:'Evet, sınıfta aldım',nkNo:'Hayır, reddet',
       chT:c=>`${CL.h(c)} sınıfında öğretmen değişikliği`,coord:'Sınıf öğretmeni',chHint:'Yalnızca öğretmenin bu değişikliği sana söylediyse kabul et.',chYes:'Kabul et',chNo:'Reddet',
       former:'Bu mesaj sınıfının eski bir öğretmeninden.',notYou:'Bu bağlantı başka bir öğrenci için.',removed:c=>`${CL.h(c)} sınıfından çıkarıldın. Tekrar katılmak için öğretmenine sor.`,byeNone:'Bu sınıfta değilsin.',byeOther:'Bu bildirim başka bir öğrenci için.',byeBad:'Bu bildirim denetlenemedi; kabul edilmedi.',byeT:c=>`${CL.h(c)} sınıfından ayrıldın`,byeMsg:'Koordinatörün seni bu sınıftan çıkardı. Oyunlardaki ilerlemen korunur.',byeFor:n=>`Bu bildirim ${CL.h(n)} için: bu cihazda sınıftan çıkarıldı.`,moving:'taşınıyor',myClasses:'Sınıfların',ann:'Duyuru',annGot:'📣 Yeni sınıf duyurusu',annBad:'Bu duyuru denetlenemedi; kabul edilmedi.',annNo:'Bu duyuru katılmadığın bir sınıf için.'};
@@ -269,7 +294,7 @@ if(typeof window!=='undefined'&&window.G7_GAME&&typeof LESSONS!=='undefined'){(f
     const ex=CLS()[o.cid],newer=!ex||o.v>ex.v||(o.v===ex.v&&o.t>ex.t);
     const apply=()=>{const m2=CLS(),e0=m2[o.cid],former=[...(e0&&e0.former||[])];
       if(e0&&newer){const now=new Set(o.seats.map(z=>z[1]));e0.seats.filter(z=>!now.has(z[1])&&z[1]!==o.co.tid).forEach(z=>former.push([z[1],z[2],z[4]||[]]));if(e0.co.tid!==o.co.tid)former.push([e0.co.tid,e0.co.n,e0.co.alias||[]])}
-      const base=newer?{c:o.c,v:o.v,t:o.t,co:o.co,seats:o.seats,ds:String(o.ds||'').slice(0,60)}:{c:e0.c,v:e0.v,t:e0.t,co:e0.co,seats:e0.seats,ds:e0.ds||''};
+      const base=newer?{c:o.c,v:o.v,t:o.t,co:{...o.co,alias:[...new Set([...((e0&&e0.co.alias)||[]),...(o.co.alias||[])])]},seats:o.seats,ds:String(o.ds||'').slice(0,60)}:{c:e0.c,v:e0.v,t:e0.t,co:e0.co,seats:e0.seats,ds:e0.ds||''};
       /* only a join sets the membership time: a class-wide join uses the link time, a personal enrol its own pt; seat updates keep it */
       const pt=o.to?Math.max(o.to.pt,(e0&&e0.pt)||0):(e0?(e0.pt||0):o.t);
       m2[o.cid]={...base,former:former.filter(f=>!base.seats.some(z=>z[1]===f[0])).slice(-20),joined:e0?e0.joined:Date.now(),pt,enrolKey:o.to?sk:((e0&&e0.enrolKey)||sk),moving:false};
@@ -279,7 +304,7 @@ if(typeof window!=='undefined'&&window.G7_GAME&&typeof LESSONS!=='undefined'){(f
     if(!ex){apply();return}
     if(ex.co.pub!==o.co.pub){if(!o.nk){hub();flash(Cx.wrongKey);return}
       hub();dlg(`<h2 style="margin-top:0">🔑 ${Cx.nkT}</h2><p>${Cx.nk(o)}</p>`,[[Cx.nkYes,()=>seatAsk(ex,o,apply)],[Cx.nkNo,null]]);return}
-    if(!newer){if(o.to&&o.to.pt>(ex.pt||0)){apply();return}hub();flash(Cx.old);return}
+    if(!newer){if(o.to&&o.to.pt>(ex.pt||0)){apply();return}hub();flash(o.v===ex.v&&o.t===ex.t?Cx.same:Cx.old);return}
     hub();seatAsk(ex,o,apply)}
   /* removal notice (k:'bye', sent as #sinif=): verified with the class key this device pinned; applies only if newer than the join */
   async function takeBye(o){if(!CL.canSign()){hub();flash(Cx.nosig);return}
@@ -294,6 +319,15 @@ if(typeof window!=='undefined'&&window.G7_GAME&&typeof LESSONS!=='undefined'){(f
       CL.set('g7-classes-bye',B);rebuildTeachers();hub()};
     hub();if(sk===cur)dlg(`<h2 style="margin-top:0">${Cx.byeT(x.c)}</h2><p>${Cx.byeMsg}</p>`,[[T.read,go]]);
     else dlg(`<p>${Cx.byeFor(CL.cap(sk.split('|')[1]||sk))}</p>`,[[T.read,go]])}
+  /* permanent join report: one line per class this student joined; prominent until a report to that class's coordinator
+     (or an older id of the same coordinator) has been prepared after joining */
+  const J=EN?{btn:c=>`Tell my class teacher I joined · ${c}`,done:(c,d)=>`Join report prepared · ${c} · ${d}`,again:'Send again',none:'No class yet: ask your teacher for the class link.'}
+    :{btn:c=>`Katıldığımı bildir · ${c}`,done:(c,d)=>`Katılım bildirimi hazırlandı · ${c} · ${d}`,again:'Tekrar gönder',none:'Sınıfın yok: öğretmeninden sınıf bağlantısını iste.'};
+  function joinLines(){const st=CL.student();if(!st)return '';const m=CLS(),ids=Object.keys(m);if(!ids.length)return `<p class="hint cl-join">🏫 ${J.none}</p>`;
+    const L=CL.get('g7-lastsent',{})[CL.key(st)]||{};
+    return ids.map(cid=>{const x=m[cid],e=[x.co.tid,...(x.co.alias||[])].map(t=>L[t]).filter(Boolean).sort((a,b)=>b.t-a.t)[0];
+      return e&&e.t>=(x.joined||0)?`<p class="hint cl-join">✓ ${CL.h(J.done(x.c,CL.date(e.t)))} · <button class="cl-edit cl-jr" data-t="${CL.h(x.co.tid)}" type="button">${J.again}</button></p>`
+        :`<p class="cl-join"><button class="btn gold sm cl-jb" data-t="${CL.h(x.co.tid)}" type="button">📤 ${CL.h(J.btn(x.c))}</button></p>`}).join('')}
   function classesLine(){const L=Object.values(CLS()).map(x=>CL.h(x.c)+(x.ds?' – '+CL.h(x.ds):'')+(x.moving?` (${Cx.moving})`:''));return L.length?`🏫 ${Cx.myClasses}: ${L.join(' · ')}`:''}
   function seatAsk(ex,o,apply){const M=s=>{const r={};s.forEach(x=>r[x[0]]=x[2]);return r},A=M(ex.seats),B=M(o.seats),ch=[...new Set([...Object.keys(A),...Object.keys(B)])].filter(g=>A[g]!==B[g]);
     if(!ch.length&&ex.co.n===o.co.n){apply();return}
@@ -301,7 +335,8 @@ if(typeof window!=='undefined'&&window.G7_GAME&&typeof LESSONS!=='undefined'){(f
   function joinClass(o){dlg(`<h2 style="margin-top:0">🎉 ${Cx.joined(o)}</h2><p style="margin:.3em 0">${Cx.list}</p>${teachersHtml(false)}<p class="hint">${I.joinHint}</p>`,[[I.join,()=>sendTeacher(o.co.tid,true)],[I.later,null]])}
   /* announcements: signed by the class coordinator or a seated teacher (a former teacher's key no longer counts) */
   async function takeAnn(o){if(!CL.canSign()){hub();flash(Cx.nosig);return}const st=CL.student(),x=CLS()[o.cid];if(!st||!x){hub();flash(Cx.annNo);return}
-    let pub=null;if(o.by.tid===x.co.tid)pub=x.co.pub;else{const s=x.seats.find(s=>s[1]===o.by.tid);if(s)pub=s[3]}
+    let pub=null,kh='';if(o.by.tid===x.co.tid)pub=x.co.pub;else{const s=x.seats.find(s=>s[1]===o.by.tid);if(s){pub=s[3]||null;kh=s[7]||''}}
+    if(!pub&&kh&&o.by.pub&&await CL.kh(o.by.pub)===kh)pub=o.by.pub;
     if(!pub||!await CL.verifyObj(pub,CL.unsigned(o),o.sig)){hub();flash(Cx.annBad);return}
     const sk=CL.key(st),A=CL.get('g7-ann',[]).filter(a=>(a.exp||0)>Date.now());if(!A.some(a=>a.sk===sk&&a.by.tid===o.by.tid&&a.t===o.t))A.push({sk,cid:o.cid,c:x.c,by:o.by,m:String(o.m).slice(0,400),t:o.t,exp:Math.min(o.exp||0,o.t+30*864e5),read:false});
     CL.set('g7-ann',A.sort((a,b)=>a.t-b.t).slice(-10));hub();flash(Cx.annGot)}
@@ -365,7 +400,7 @@ if(typeof window!=='undefined'&&window.G7_GAME&&typeof LESSONS!=='undefined'){(f
     if(hasVc)lines.push(V.added);
     lines.push('',EN?'Teacher panel link:':'Öğretmen paneli bağlantısı:',CL.PANEL+'#r='+code);
     const onSend=()=>{if(hasVc)CL.set('g7-vcok',null);const L=CL.get('g7-lastsent',{}),k=CL.key(st);L[k]=L[k]||{};L[k][tid||'other']={t:Date.now(),n:tc?tc.n:V.other};CL.set('g7-lastsent',L);
-      document.querySelectorAll('.cl-last').forEach(e=>e.textContent=lastLine())};
+      document.querySelectorAll('.cl-last').forEach(e=>e.textContent=lastLine());if(document.querySelector('#app .cl-joinbox'))try{decorateHome()}catch(e){}};
     CL.share({en:EN,title:tc?`${T.sendT} · ${tc.n}`:T.sendT,intro:T.sendIntro,text:lines.join('\n'),subject:`${EN?'Report':'Rapor'} – ${CL.full(st)} (${st.c})`,rows:9,
       phones:tc&&tc.ph?[[tc.n,tc.ph]]:[],email:tc?tc.em:'',onSend})}
   function sendParent(){const st=CL.student();if(!st){askName(true);return}const pc=CL.parent(),ph=CL.phones(pc,EN),to=[...ph.map(p=>p[0]+' '+p[1]),pc.email].filter(Boolean).join(' · ');
@@ -374,7 +409,8 @@ if(typeof window!=='undefined'&&window.G7_GAME&&typeof LESSONS!=='undefined'){(f
   /* ---- home screen: the student's name, the send button, teacher notes ---- */
   function decorateHome(){const st=CL.student(),nm=document.querySelector('#app .profile .nm');if(!nm)return;
     if(st){nm.innerHTML=`${CL.h(CL.full(st))} <small class="cl-cls">${CL.h(st.c)}</small> <button class="cl-edit" type="button" title="${T.edit}" aria-label="${T.edit}">✎</button>`;nm.querySelector('.cl-edit').onclick=()=>askName(true)}
-    document.querySelectorAll('#app .profile .cl-tch').forEach(x=>x.remove());const th=teachersHtml(false);if(th)nm.insertAdjacentHTML('afterend',th);
+    document.querySelectorAll('#app .profile .cl-tch,#app .profile .cl-joinbox').forEach(x=>x.remove());const th=teachersHtml(false);if(th)nm.insertAdjacentHTML('afterend',th);
+    if(st){(nm.parentElement.querySelector('.cl-tch')||nm).insertAdjacentHTML('afterend',`<div class="cl-joinbox">${joinLines()}</div>`);document.querySelectorAll('#app .cl-joinbox [data-t]').forEach(b=>b.onclick=()=>sendTeacher(b.dataset.t,true))}
     const pb=document.querySelector('#app .profile .pbtns');if(pb&&!pb.querySelector('.cl-send')){const b=document.createElement('button');b.className='btn cl-send';b.type='button';b.textContent=T.send;b.onclick=()=>sendTeacher();pb.insertBefore(b,pb.children[2]||null)}
     const prof=document.querySelector('#app .profile');document.querySelectorAll('#app .cl-note,#app .cl-odev').forEach(x=>x.remove());
     const oc=odevCard();if(prof&&oc){prof.insertAdjacentHTML('afterend',oc);document.querySelectorAll('#app .cl-odev .cl-osend').forEach(b=>b.onclick=()=>sendTeacher(b.dataset.t||undefined))}
@@ -397,7 +433,7 @@ if(typeof window!=='undefined'&&window.G7_GAME&&typeof LESSONS!=='undefined'){(f
     .cl-box{font-size:1.25em;line-height:1}.cl-items li.cl-done .cl-box{color:var(--green,#3ddc97)}.cl-it{flex:1;min-width:0}
     .cl-pill{display:inline-block;border-radius:999px;padding:1px 9px;font-weight:700;font-size:.85rem;border:1.5px solid var(--line)}
     .cl-pill.g{color:var(--green,#3ddc97);border-color:currentColor}.cl-pill.y{color:var(--gold);border-color:currentColor}.cl-pill.r{color:var(--red,#ff5a6e);border-color:currentColor}
-    .cl-tch{font-size:.85rem;color:var(--ink-soft);margin:2px 0 4px}.cl-rep .cl-tch{margin:6px 0 10px;line-height:1.8}.cl-warn{color:var(--gold)!important}
+    .cl-joinbox{margin:2px 0 6px}.cl-join{margin:2px 0}.cl-tch{font-size:.85rem;color:var(--ink-soft);margin:2px 0 4px}.cl-rep .cl-tch{margin:6px 0 10px;line-height:1.8}.cl-warn{color:var(--gold)!important}
     .cl-inv{background:color-mix(in srgb,var(--gold) 16%,transparent);border:1.5px solid var(--gold);border-radius:10px;padding:8px 10px;margin:6px 0}
     .cl-flash{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:var(--gold);color:#1d1400;padding:10px 18px;border-radius:12px;font-weight:700;z-index:999;box-shadow:0 6px 20px rgba(0,0,0,.35)}`;document.head.appendChild(css);
 
